@@ -6,7 +6,7 @@ from . import default_configs
 
 
 class DaskCluster:
-    def __init__(self, namespace: str, cluster_id: str, scheduler_pod_spec=None, worker_pod_spec=None):
+    def __init__(self, namespace: str, cluster_id: str, scheduler_pod_spec=None, worker_pod_spec=None, minikube_ip=None):
         """
         A Dask cluster in kubernetes.
         :param namespace: Kubernetes namespace to be used
@@ -14,6 +14,7 @@ class DaskCluster:
         namespace. Something based on a username is a good idea.
         :param scheduler_pod_spec: a YAML pod specification for the scheduler (see default_configs.py)
         :param worker_pod_spec: a YAML pod specification for the worker (see default_configs.py)
+        :param minikube_ip: the ip address of Minikube proxy when using minikube
         """
         self.namespace = namespace
         self.cluster_id = cluster_id
@@ -25,6 +26,7 @@ class DaskCluster:
         self._scheduler = None
         self._dashboard = None
         self._client = None
+        self.minikube_ip = minikube_ip
 
     def __enter__(self):
         self.create()
@@ -62,9 +64,11 @@ class DaskCluster:
                                                                                            ))
         # Start the services
         service_scheduler_created = v1.create_namespaced_service(self.namespace, service_scheduler, pretty=True)
+
         service_scheduler_dashboard_created = v1.create_namespaced_service(self.namespace, service_scheduler_dashboard,
                                                                            pretty=True)
         dask_scheduler_ip_port_internal = f"{service_scheduler_created.spec.cluster_ip}:{service_scheduler_created.spec.ports[0].port}"
+
         dask_scheduler_external_port = service_scheduler_created.spec.ports[0].node_port
         dask_scheduler_dashboard_external_port = service_scheduler_dashboard_created.spec.ports[0].node_port
 
@@ -107,13 +111,16 @@ class DaskCluster:
 
         # Get the host IP of the scheduler
         v1 = kube_client.CoreV1Api()
-        while True:
-            dask_scheduler_external_ip = v1.list_namespaced_pod(self.namespace,
-                                                                label_selector=f"user={self.cluster_id},app=dask-scheduler"
-                                                                ).items[0].status.host_ip
-            if dask_scheduler_external_ip is not None:
-                break
-            sleep(2)
+        if self.minikube_ip:
+            dask_scheduler_external_ip = self.minikube_ip
+        else:
+            while True:
+                dask_scheduler_external_ip = v1.list_namespaced_pod(self.namespace,
+                                                                    label_selector=f"user={self.cluster_id},app=dask-scheduler"
+                                                                    ).items[0].status.host_ip
+                if dask_scheduler_external_ip is not None:
+                    break
+                sleep(2)
 
         self._initialized = True
         self._scheduler = f"tcp://{dask_scheduler_external_ip}:{dask_scheduler_external_port}"
